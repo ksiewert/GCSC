@@ -1,53 +1,14 @@
-import glob
-import numpy as np
-import pandas as pd
-import pdb
-import numpy.ma as ma
-import sys
-from scipy import stats
-import statsmodels.api as sm
-from statsmodels.formula.api import ols
-from statsmodels.formula.api import wls
-import math
-from statsmodels.stats.anova import anova_lm
-import scipy
-import scipy.stats.mstats
 import argparse as ap
-import scipy.stats as stats
-import pickle
-import os
-import os.path 
-
-#This shouldnt' rely on 0/1 binary gene sets
-def prepareDataCoexp(data,setMatrix,setColNames,corr2):
-    for gSet in setColNames:
-        data[gSet+"_annotValue"] = setMatrix[data["Gene_Name"]].loc[gSet].tolist() #will be 0/1 if binary gene set
-        data[gSet] = getPathCoexp(data[gSet+"_annotValue"],corr2)
-
-        
-def prepareDataNoCoexp(data,setMatrix,setColNames):
-    for gSet in setColNames:
-        data[gSet]=setMatrix[data["Gene_Name"]].loc[gSet].tolist()
-        data[gSet+"_annotValue"]=setMatrix[data["Gene_Name"]].loc[gSet].tolist()
-
-#Will want to check for binary annotations before calculating
-def calcEnrich(coef,setMembership,setName,freeInter):
-    if freeInter:
-        coef=coef[:-1]
-    inSet = setMembership[setMembership[setName+"_annotValue"]==1]
-    setH2 = inSet.multiply(np.array(coef)).values.sum()
-    allH2 = setMembership.multiply(np.array(coef)).values.sum()
-    M=setMembership.shape[0]
-    n=inSet.shape[0]
-    if allH2==0 or M==0 or n==0:
-        return 1,allH2
-    #if one gene set, equivalent to (n*(coef[0]+coef[1]))/(n*(coef[0]+coef[1])+(M-n)*coef[1])/(n/M)
-    return (setH2/allH2)/(n/M),allH2
+import glob
+import pandas as pd
+import scipy.sparse
+import numpy as np
+import scipy.stats
+import scipy.sparse as sparse
 
 #Calculate h2(C)/|C|-)h^2-h^2(C)/(M-|C|)
-def calcDiffProp(coef,setMembership,setName,freeInter):
-    if freeInter:
-        coef=coef[:-1]
+def calcDiffProp(coef,setMembership,setName):
+    coef=coef[:-1]
     inSet = setMembership[setMembership[setName+"_annotValue"]==1]
     setH2 = inSet.multiply(np.array(coef)).values.sum()
     notSet = setMembership[setMembership[setName+"_annotValue"]==False]
@@ -59,307 +20,203 @@ def calcDiffProp(coef,setMembership,setName,freeInter):
         return 0
     return setH2/n-notsetH2/notset
 
-def getTWASforGenes(TWAStrait,tissue,allGenes):
-    TWASinfo = []
-    ENSG = []
-    hsq=[]
-    r2=[]
-    chrs=[]
-    pos=[]
-    dic = pickle.load(open("/n/groups/price/katie/UKB_TWAS_GTExv7models/Formatted_AllTissues_inchsq/OnlySigGenes/"+tissue+"_"+TWAStrait+"_TWASres.pkl",'rb'))
-
-    for geneEntry in dic.keys():
-        gene = geneEntry[1]
-        if gene.split(".")[0] in allGenes:
-            TWASinfo.append(float(dic[geneEntry][0]))
-            hsq.append(float(dic[geneEntry][1]))
-            ENSG.append(gene)
-            r2.append(float(dic[geneEntry][3]))
-            chrs.append(int(dic[geneEntry][5])) #Changed 3/2
-            pos.append(int(dic[geneEntry][6]))
-    return np.array(TWASinfo)**2,np.array(ENSG),np.array(hsq),np.array(chrs),np.array(pos),np.array(r2)
+def calcEnrich(coef,setMembership,setName):
+    coef = coef[:-1] #remove intercept
+    isBinary = setMembership.isin([0,1]).all().all()
+    allH2 = setMembership.multiply(np.array(coef)).values.sum()
+    if isBinary:
+        inSet = setMembership[setMembership[setName+"_annotValue"]==1]
+        setH2 = inSet.multiply(np.array(coef)).values.sum()
+        M = setMembership.shape[0]
+        n = inSet.shape[0]
+        if allH2==0 or M==0 or n==0:
+            return 1,allH2
+        return (setH2/allH2)/(n/M),allH2
+    return None,allH2
 
 
-def getCoexpMatrix(tissue,allGenes):
-    corr2 = np.load(open("/n/groups/price/katie/GenePredAnalysis/AllGeneCoexpMatrics/OnlySigGenes/coexpMatrix_"+tissue+".npy",'rb'))
-    allModelGenes = np.load(open("/n/groups/price/katie/GenePredAnalysis/AllGeneCoexpMatrics/OnlySigGenes/geneNames_"+tissue+".npy",'rb'))
-    allModelGenes = np.char.replace(allModelGenes,tissue+".","")
-    allModelGenesENSG = [ENSG.split(".")[0] for ENSG in allModelGenes] 
-    universeGenes,corri,allGenesi = np.intersect1d(allModelGenesENSG,allGenes,return_indices=True) #get genes in allGenes that are in coexpression matrix
-    corr2 = corr2[np.ix_(corri,corri)]
-    #corr2 = np.where(corr2<.1,0,corr2) #may want to delete
-    return(corr2,universeGenes)
+def runGCSC(data,coefs,N,out):
+    
+    out=open(args.out+"/GCSCresults.txt",'w')
+    out.write("Parameter Value Standard_error P-value\n")
+    for coefi in range(len(coefs)):
+        coef = coefs[coefi]
+        currCol=["all"]+[coef]
+        nGenesPerTiss=data.shape[0]/data["tissue"].nunique()
+        hgeAll_hat = np.mean(data["Z2"]-1)*nGenesPerTiss/(N*np.mean(data["all_unstd"]))
+        
+        weights=data["genetissCountW"]*(1./data["All_nocorr"])*1./((1+N*hgeAll_hat*data["all_unstd"]/nGenesPerTiss)**2)
+        totalweights=np.sum(weights)
+        sol,XTX,XTy = regress(data[currCol],data["y"],weights)
 
+        modelenriches, h2g = calcEnrich(sol,data[["all_annotValue"]+[coef+"_annotValue" ]],coef)
+        if modelenriches!=None:
+            modeldiffprop = calcDiffProp(sol,data[["all_annotValue"]+[coef+"_annotValue"]],coef)
+        else:
+            modeldiffprop=None
+        sd_c = np.std(data[[coef+"_annotValue"]])
+        taustar = (sol[1])*sd_c/(h2g/data.shape[0])
+        
+        #Now, need to jackknife
+        nBlocks=data["block"].nunique()
+        coef_joint_set = np.zeros(nBlocks,dtype=np.float32)
+        enriches = np.zeros(nBlocks,dtype=np.float32)
+        diffprop = np.zeros(nBlocks,dtype=np.float32)
+        inters = np.zeros(nBlocks,dtype=np.float32)
+        ps_joint_set = np.zeros(nBlocks,dtype=np.float32)
+        ps_enrich = np.zeros(nBlocks,dtype=np.float32)
+        ps_diff = np.zeros(nBlocks,dtype=np.float32)
+        ps_inters = np.zeros(nBlocks,dtype=np.float32)
+        coef_covar = np.zeros(nBlocks,dtype=np.float32)
+        mjs = np.zeros((nBlocks),dtype=np.float32)
+        hjs = np.zeros((nBlocks),dtype=np.float32)
+        for blocki in range(nBlocks):
+            coef_joint_set[blocki],enriches[blocki], diffprop[blocki], ps_joint_set[blocki], ps_enrich[blocki], ps_diff[blocki], inters[blocki], ps_inters[blocki], mjs[blocki], hjs[blocki] = jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCol,modelenriches,modeldiffprop,sol,totalweights)
+         
+        
+        #Write output
+        thetaJ_joint_set= nBlocks*sol[1]-np.sum(((totalweights-mjs)*np.array(coef_joint_set))/totalweights)
+        if modelenriches!=None:
+            thetaJ_enrich = nBlocks*modelenriches-np.sum(((totalweights-mjs)*np.array(enriches))/totalweights)
+            thetaJ_diff = nBlocks*modeldiffprop-np.sum(((totalweights-mjs)*np.array(diffprop))/totalweights)
+        thetaJ_inter = nBlocks*sol[-1]-np.sum(((totalweights-mjs)*np.array(inters))/totalweights)
 
-def getPathCoexp(gSet,corr2):
-    '''
-    Params:
-    gSet:Vector of 0/1 abscense/prescence in the gene set
-    corr2:Squared co-regulation score
-    '''
-    coexpMatrixSet = corr2*np.array(gSet) #Want to multiply along columns
-    #pdb.set_trace()
-    return(np.sum(coexpMatrixSet,axis=1))
+        sd_c = np.std(data[coef+"_annotValue"])
+        taustarJ = thetaJ_joint_set*sd_c/(h2g/data.shape[0])
+        se_joint_set = np.sqrt(1/nBlocks*np.sum(np.square(ps_joint_set-thetaJ_joint_set)/(hjs-1)))
+        if modelenriches!=None:
+            se_diff = np.sqrt(1/nBlocks*np.sum(np.square(ps_diff-thetaJ_diff)/(hjs-1)))
+            se_enrich = np.sqrt(1/nBlocks*np.sum(np.square(ps_enrich-thetaJ_enrich)/(hjs-1)))
+        se_tau_star = se_joint_set*sd_c/(h2g/data.shape[0])
+        se_inter = np.sqrt(1/nBlocks*np.sum(np.square(ps_inters-thetaJ_inter)/(hjs-1)))
+        
+        out.write(coef+"_coef: "+'{:0.3e}'.format(thetaJ_joint_set)+" "+'{:0.3e}'.format(se_joint_set)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_joint_set/se_joint_set),nBlocks)*2.)+"\n")
+        out.write(coef+"_tau*: " + '{:0.3e}'.format(taustarJ) + " " + '{:0.3e}'.format(se_tau_star)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(taustarJ/se_tau_star),nBlocks)*2.) +"\n")
+        if modelenriches!=None:
+            out.write(coef+"_enrichment: "+str(round(thetaJ_enrich,3))+" "+'{:0.3e}'.format(se_enrich)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_diff/se_diff),nBlocks)*2.)+"\n")
+
+        out.write(coef+"_intercept: " + '{:0.3e}'.format(thetaJ_inter)+" "+'{:0.3e}'.format(thetaJ_inter) +"\n")
+        
+        
+def jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCols,modelenriches,modeldiffprop,sol,totalweights):
+    
+    currBlock = data.query("block == @blocki")
+    currRows = data.query("block != @blocki")
+    X_block = np.hstack((currBlock[currCols],np.ones((currBlock[currCols].shape[0],1))))
+    weights_block = currBlock["genetissCountW"]*(1./currBlock["All_nocorr"])*1./((1+N*hgeAll_hat*currBlock["all_unstd"]/nGenesPerTiss)**2)
+    XTX_block = X_block.T@np.diag(weights_block)@X_block
+    XTy_block = X_block.T@np.diag(weights_block)@currBlock["y"]
+    sol_block=np.linalg.solve(XTX-XTX_block,XTy-XTy_block)
+    mj = np.sum(weights_block)
+    hj = totalweights / mj
+    ps_joint_set = hj*sol[1]-(hj-1)*sol_block[1]
+    
+    inters = sol_block[-1]
+    ps_inters =  hj*sol[-1]-(hj-1)*sol_block[-1]
+    if modelenriches!=None:
+        enrich ,_ = calcEnrich(sol_block,currRows[["all_annotValue"]+[coef+"_annotValue"]],coef)
+        diffprop = calcDiffProp(sol_block,currRows[["all_annotValue"]+[coef+"_annotValue"]],coef)
+        ps_enrich = hj*modelenriches-(hj-1)*enrich
+        ps_diff = hj*modeldiffprop-(hj-1)*diffprop
+        return sol_block[1],enrich, diffprop,ps_joint_set,ps_enrich,ps_diff,inters,ps_inters, mj, hj
+    return sol_block[1], None, None,ps_joint_set,None,None,inters,ps_inters, mj, hj
 
     
-def runGCSC(data,coef,contCoef,setNameFile,trait,freeIntercept):
-    X = np.array(data[coef + contCoef])
-
-    nGenesPerTiss=data.shape[0]/data["tissue"].nunique()
-    hgeAll_hat = np.mean(data["Z2"]-1)*nGenesPerTiss/(Ntrait*np.mean(data["all"]))
     
-    weights=data["genetissCountW"]*(1./data["all_count"])*1./((1+Ntrait*hgeAll_hat*data["all"]/nGenesPerTiss)**2)
     
-    if freeIntercept:
-        X = np.hstack((X,np.ones((X.shape[0],1))))
+def regress(X,y,weights):
+    X = np.hstack((X,np.ones((X.shape[0],1)))) #Adds intercept
     XTw = X.T*np.array(weights)[None,:]
     XTX = XTw@X
-    XTy = XTw@data["y"]
-
+    XTy = XTw@y
     sol=np.linalg.solve(XTX,XTy)
-    print(sol)
-    setstoUse = coef
-    modelenriches = np.zeros(len(setstoUse))
-    modeldiffprop = np.zeros(len(setstoUse))
-    modeltaustar = np.zeros(len(setstoUse))
-
-    for gseti in range(len(coef)):
-        gSet = coef[gseti]
-        #pdb.set_trace()
-        modelenriches[gseti], h2g = calcEnrich(sol,data[[setName+"_annotValue" for setName in setstoUse]+contCoef],gSet,freeIntercept)
-        modeldiffprop[gseti] = calcDiffProp(sol,data[[setName+"_annotValue" for setName in setstoUse]+contCoef],gSet,freeIntercept)
-        sd_c = np.std(data[[gSet+"_annotValue"]])
-        modeltaustar[gseti] = (sol[gseti])*sd_c/(h2g/data.shape[0])
+    return sol,XTX,XTy
     
-    modelcovtaustar = np.zeros(len(contCoef))              
-    for gseti in range(len(coef),len(coef)+len(contCoef)):
-        gSet = contCoef[gseti-len(coef)]
-        sd_c=np.std(data[gSet])
-        modelcovtaustar[gseti-len(coef)] = (sol[gseti])*sd_c/(h2g/data.shape[0])
-    blocks = data["block"].unique()
-    nBlocks=len(blocks)
-    coef_joint_set = np.zeros((len(setstoUse),nBlocks),dtype=np.float32)
-    enriches = np.zeros((len(setstoUse),nBlocks),dtype=np.float32)
-    diffprop = np.zeros((len(setstoUse),nBlocks),dtype=np.float32)
-    ps_joint_set = np.zeros((len(setstoUse),nBlocks),dtype=np.float32)
-    ps_enrich = np.zeros((len(setstoUse),nBlocks),dtype=np.float32)
-    ps_diff = np.zeros((len(setstoUse),nBlocks),dtype=np.float32)
-    coef_covar = np.zeros((len(contCoef),nBlocks),dtype=np.float32)
-    covar_tarstar=np.zeros((len(contCoef),nBlocks),dtype=np.float32)
-    ps_covartarstar=np.zeros((len(contCoef),nBlocks),dtype=np.float32)
-    if freeIntercept:
-        inters = np.zeros((nBlocks),dtype=np.float32)
-        ps_inters = np.zeros((nBlocks),dtype=np.float32)
-        
-    mjs = np.zeros((nBlocks),dtype=np.float32)
-    hjs = np.zeros((nBlocks),dtype=np.float32)
-    totalweights=np.sum(data["genetissCountW"]*(1./data["all_count"])*1./((1+Ntrait*hgeAll_hat*data["all"]/nGenesPerTiss)**2))
-    for blocki in range(len(blocks)):
-        currRows = data.loc[data.block!=blocks[blocki]]
-        currBlock = data.loc[data.block==blocks[blocki]]
-        X_block=np.array(currBlock[coef + contCoef])
-        if freeIntercept:
-            X_block = np.hstack((X_block,np.ones((X_block.shape[0],1))))
-        weights_block=currBlock["genetissCountW"]*(1./currBlock["all_count"])*1./((1+Ntrait*hgeAll_hat*currBlock["all"]/nGenesPerTiss)**2) 
-
-        XTX_block = X_block.T@np.diag(weights_block)@X_block
-        XTy_block = X_block.T@np.diag(weights_block)@currBlock["y"]
-        sol_block=np.linalg.solve(XTX-XTX_block,XTy-XTy_block)
-        mj = np.sum(weights_block) 
-
-        hj = totalweights / mj
-        mjs[blocki] = mj
-        hjs[blocki] = hj
-        for geneseti in range(len(setstoUse)):    
-            gSet = setstoUse[geneseti]
-            coef_joint_set[geneseti,blocki] = sol_block[geneseti]
-            enriches[geneseti,blocki],h2g = calcEnrich(sol_block,currRows[[setName+"_annotValue" for setName in setstoUse]+contCoef],gSet,freeIntercept)
-            diffprop[geneseti,blocki] = calcDiffProp(sol_block,currRows[[setName+"_annotValue" for setName in setstoUse]+contCoef],gSet,freeIntercept)
-
-            ps_joint_set[geneseti,blocki] = hj*sol[geneseti]-(hj-1)*coef_joint_set[geneseti,blocki]
-            ps_enrich[geneseti,blocki] = hj*modelenriches[geneseti]-(hj-1)*enriches[geneseti,blocki]
-            ps_diff[geneseti,blocki] = hj*modeldiffprop[geneseti]-(hj-1)*diffprop[geneseti,blocki]
-        if freeIntercept:
-            inters[blocki]=sol_block[-1]
-            ps_inters =  hj*sol[-1]-(hj-1)*sol_block[-1]
-        for gseti in range(len(coef),len(coef)+len(contCoef)):
-            gSet = contCoef[gseti-len(coef)]
-            coef_covar[gseti-len(coef),blocki]=sol_block[gseti]
-
-    if not os.path.exists(args.outDir+"/"+setNameFile):
-        os.mkdir(args.outDir+"/"+setNameFile)
-
-    out = open(args.outDir+"/"+setNameFile+"/"+setNameFile+"_"+trait+".txt",'w')
-
-    for geneseti in range(len(setstoUse)):
-        gSet = setstoUse[geneseti]
-        nGenesModelPairs = data[data[gSet+"_annotValue"]==1].shape[0]
-
-        nGenes = data[data[gSet+"_annotValue"]==1]["Gene_Name"].nunique()
-        thetaJ_joint_set= nBlocks*sol[geneseti]-np.sum(((totalweights-mjs)*np.array(coef_joint_set[geneseti]))/totalweights)
-        thetaJ_enrich = nBlocks*modelenriches[geneseti]-np.sum(((totalweights-mjs)*np.array(enriches[geneseti]))/totalweights)
-        thetaJ_diff = nBlocks*modeldiffprop[geneseti]-np.sum(((totalweights-mjs)*np.array(diffprop[geneseti]))/totalweights)
-        sd_c = np.std(data[gSet+"_annotValue"])
-        nBlocks=data["block"].nunique()
-        taustarJ = thetaJ_joint_set*sd_c/(h2g/data.shape[0])
-        
-        se_joint_set = np.sqrt(1/nBlocks*np.sum(np.square(ps_joint_set[geneseti]-thetaJ_joint_set)/(hjs-1)))
-        se_diff = np.sqrt(1/nBlocks*np.sum(np.square(ps_diff[geneseti]-thetaJ_diff)/(hjs-1)))
-        se_enrich = np.sqrt(1/nBlocks*np.sum(np.square(ps_enrich[geneseti]-thetaJ_enrich)/(hjs-1)))
-        se_tau_star = se_joint_set*sd_c/(h2g/data.shape[0])
-        pdb.set_trace()
-        out.write(setstoUse[geneseti]+"_coef: "+str(thetaJ_joint_set)+" "+str(se_joint_set)+" "+str(scipy.stats.t.sf(abs(thetaJ_joint_set/se_joint_set),nBlocks)*2.)+"\n")
-        
-        if se_tau_star>0:
-            out.write(setstoUse[geneseti]+"_tau*: " + str(taustarJ) + " " + str(se_tau_star)+" "+str(scipy.stats.t.sf(abs(taustarJ/se_tau_star),nBlocks)*2.) +"\n")
-            out.write(setstoUse[geneseti]+"_enrichment: "+str(thetaJ_enrich)+" "+str(se_enrich)+" "+str(scipy.stats.t.sf(abs(thetaJ_diff/se_diff),nBlocks)*2.)+"\n")
-
-        else:
-            out.write(setstoUse[geneseti]+"_tau*: " + str(taustarJ) + " " + str(se_tau_star)+" 0"+"\n")
-            out.write(setstoUse[geneseti]+"__enrichment: "+str(thetaJ_enrich)+" "+str(se_enrich)+" 0"+"\n")
-        out.write(setstoUse[geneseti]+"_genecounts: "+str(nGenesModelPairs)+" "+str(nGenes)+"\n")
-    if freeIntercept:
-        thetaJ_inter = nBlocks*sol[-1]-np.sum(((totalweights-mjs)*np.array(inters))/totalweights)
-        se_inter = np.sqrt(1/nBlocks*np.sum(np.square(ps_inters-thetaJ_inter)/(hjs-1)))
-        out.write("Intercept:" + str(thetaJ_inter)+" "+str(se_inter) +"\n")
-        
-    for geneseti in range(len(coef),len(coef)+len(contCoef)):
-        gSet = contCoef[geneseti-len(coef)]
-        theta_covar=nBlocks*sol[geneseti]-np.sum(((totalweights-mjs)*np.array(coef_covar[geneseti-len(coef)]))/totalweights)
-        se_covar=np.sqrt(1/nBlocks*np.sum(np.square(ps_covartarstar[geneseti-len(coef)]-theta_covar)/(hjs-1)))
-
-       
-        out.write(gSet+"_coef: "+str(theta_covar)+" "+str(se_joint_set)+ str(se_tau_star)+str(scipy.stats.t.sf(abs(theta_covar/se_joint_set),nBlocks)*2.)+"\n")
-        sd_c = np.std(data[gSet+"_annotValue"])
-        taustar = theta_covar*sd_c/(h2g/data.shape[0])
-        se_tau_star = se_covar*sd_c/(h2g/data.shape[0])
-        out.write(gSet+"_tau*: " + str(taustarJ) + " " + str(se_tau_star)+str(scipy.stats.t.sf(abs(taustarJ/se_tau_star),nBlocks)*2.) +"\n")
-        out.write(gSet+"_sumvalue: "+str(np.sum(data[gSet+"_annotValue"]))+"\n")
-
-    out.close()
+def getTWASStats(path,tissue):
+    '''Load in FUSION formatted statistics'''
     
-    
-    
-argp = ap.ArgumentParser(description="Simulate TWAS using real genotype data",
-                         formatter_class=ap.ArgumentDefaultsHelpFormatter)
-argp.add_argument("--geneSets",type=str)
-argp.add_argument("--setInfo", type=str)
-argp.add_argument("--outDir", type=str)
-argp.add_argument("--trait", type=str)
-argp.add_argument("--tissueFile", type=str)
-argp.add_argument("--freeInter", default=False,action='store_true', help="Allow the intercept to vary. For use in estimating all gene heritability instead of gene set enrichment")
+    df = pd.concat(map(lambda file: pd.read_csv(file, usecols=["FILE","CHR","P0","TWAS.Z"],dtype={"FILE":str,"CHR":int,"P0":int,"TWAS.Z":str},sep="\t"), glob.glob(path.replace("tissue",tissue)+"/*.dat")))
+    df = df[~df['TWAS.Z'].str.contains("NA")]
+    df["ENSG"]=df["FILE"].str.split("/").str[-1].str.split(".").str[1]
+    df["Z2"]=df["TWAS.Z"].astype(float)**2
 
+    return df
+
+
+
+def prepareDataCoexp(data,setMatrix,corr2):
+    for gSet in setMatrix.index:
+        data[gSet+"_annotValue"] = setMatrix[data["Gene"]].loc[gSet].tolist()
+        
+    coreg = sparse.csr_matrix.dot(corr2, data[[gSet+"_annotValue" for gSet in setMatrix.index]])
+    for gSeti in range(len(setMatrix.index)):
+        data[setMatrix.index[gSeti]] = sparse.csr_matrix.dot(corr2, data[[gSet+"_annotValue" for gSet in setMatrix.index]])[:,gSeti] 
+
+        
+        
+argp = ap.ArgumentParser(description="Run GCSC regression", formatter_class=ap.ArgumentDefaultsHelpFormatter)
+argp.add_argument("--geneSets",type=str,required=True)
+argp.add_argument("--out", type=str)
+argp.add_argument("--TWASdir", type=str,required=True,help="Directory with TWAS results in")
+argp.add_argument("--N", type=int, help="GWAS sample size",required=True)
+argp.add_argument("--coreg", type=str,required=True, help="Directory containing coregulation scores")
+argp.add_argument("--tissues", type=str,help="Space seperated list of tissues to use, if not using all",nargs='*',action='store')
 args = argp.parse_args()
 
 
-#Get list of all genes in any of the sets
-trait = args.trait
-
-if args.tissueFile==None:
-    tissList = pd.read_csv(open("/n/groups/price/katie/UKB_TWAS_GTExv7models/TWAS_Results_all13000genes/AllTissues/AllTiss.txt",'r'),header=None)
-    tissues = tissList.iloc[:, 0].tolist()
+if args.tissues!=None:
+    tissues=args.tissues
 else:
-    tissList=pd.read_csv(open(args.tissueFile),header=None)
-    tissues = tissList.iloc[:, 0].tolist()
-
-
-
-Ndic = {}
-for line in open("/n/groups/price/katie/Data/AllGWAS_N.txt",'r'):
-    Ndic[line.split("\t")[0]]=int(line.split("\t")[1])
-Ntrait = Ndic[trait] 
-
-
-
-#Get list of set names that are covariates versus gene sets
-#Three column file: gene name, whether to use as covariate(with all gene sets) and whether to use raw value, or co-expression score with set in regression
-setInfo=pd.read_csv(open(args.setInfo,'r'),names=["CovarSet","CoexpSet"],sep=" ")
-covarNames=setInfo.index[setInfo["CovarSet"]==1].tolist()
-setNames=setInfo.index[setInfo["CovarSet"]==0].tolist()
-coexpNames=setInfo.index[setInfo["CoexpSet"]==1].tolist()
-noCoexpNames=setInfo.index[setInfo["CoexpSet"]==0].tolist()
+    tissues=[i.split("/")[-1].replace("_coregscores.npz","") for i in glob.glob(args.coreg+"/*"+"coregscores.npz")]
 
 setMembership=pd.read_csv(open(args.geneSets,'r'),header=0,index_col=0)
-sets=setInfo.index.tolist()
-setMembership=setMembership[setMembership.index.isin(sets)]
-discrete = setMembership.isin([0,1]).round(decimals=6).all(axis=1)
-contNames = discrete[~ discrete].index
-binaryNames = discrete[discrete].index
-
-
+sets=setMembership.index.tolist()
 allTissData = pd.DataFrame()
-for tissue in tissues:
-#for tissue in ["Whole_Blood"]:    
+for tissue in sorted(tissues):
     print(tissue)
-    TWASscores,ENSG,hsq,chr,pos,r2 = getTWASforGenes(args.trait, tissue,setMembership.columns)
-    ENSG = [ENSG.split(".")[0] for ENSG in ENSG]
-    corr2,geneNames = getCoexpMatrix(tissue,ENSG)
-    twasi = np.intersect1d(ENSG,geneNames,return_indices=True)[1]
-    uncorr_coex=np.sum(corr2,axis=1)
-    d = np.diag_indices_from(corr2)
-    ratio = np.minimum(np.maximum(0,r2[twasi]),hsq[twasi])/hsq[twasi]
-    meanratio=np.mean(ratio)
-    corr2[d]= np.maximum(ratio,meanratio)
-    data = pd.DataFrame({"Gene_Name":geneNames,'tissue':tissue,'Z2':TWASscores[twasi],'hsq':hsq[twasi],'all':np.sum(corr2,axis=1),'all_count':uncorr_coex,'chr':chr[twasi],"pos0":pos[twasi],"r2":r2[twasi]})
-
-    if len(coexpNames)>0:
-        prepareDataCoexp(data,setMembership,coexpNames,corr2)
-
-
-    if len(noCoexpNames)>0:
-        prepareDataNoCoexp(data,setMembership,noCoexpNames)
-        
-    data = data[data["Z2"]<max(80,0.001*Ntrait)] 
-    #Do corrected co-reg
+    stats = getTWASStats(args.TWASdir, tissue)
+    corrscores = scipy.sparse.load_npz(args.coreg+"/"+tissue+"_coregscores.npz")
+    geneNames = np.loadtxt(args.coreg+"/"+tissue+"_geneNames.txt",dtype=str)
     
+
+    data = pd.DataFrame({"Gene":geneNames,"all":corrscores.sum(axis=0).tolist()[0]})
+    
+
+    if len(sets)>0:
+        prepareDataCoexp(data,setMembership,corrscores)
+    corrscores.setdiag(1, k=0)
+    data["All_nocorr"] = corrscores.sum(axis=0).tolist()[0]
+    data=data.merge(stats,left_on="Gene",right_on="ENSG")
+    data["tissue"]=tissue
     allTissData = allTissData.append(data)
-data=allTissData.sort_values(by=["chr","pos0"])
+    
+    
+allTissData = allTissData[allTissData["Z2"]<max(80,0.001*args.N)] 
 numBlocks=200
-data["Universe"]=data["all"]
-#Get list of genes, sorted by pos, then break into chunks
-data=data.reset_index(drop=True)
-data["block"]=data.index//(data.shape[0]/numBlocks)
-data["block"]=data["block"].astype(int)
-data.dropna(inplace=True,subset=["block"])
-data["genetissCountW"] = 1/data["Gene_Name"].map(data["Gene_Name"].value_counts())
+allTissData=allTissData.sort_values(by=["CHR","P0"])
+allTissData=allTissData.reset_index(drop=True)
+allTissData["block"]=allTissData.index//(allTissData.shape[0]/numBlocks)
+allTissData["block"]=allTissData["block"].astype(int)
 
-columns= coexpNames
-
-groups=data.groupby('tissue')
-means = groups["Universe"].mean()
+#Standardize co-regulation scores
+groups=allTissData.groupby('tissue')
+allTissData["all_unstd"]=allTissData["all"]
+means = groups["all"].mean()
 topTiss=means.idxmax()
-topMean = groups.get_group(topTiss)["Universe"].mean()
-topStd = groups.get_group(topTiss)["Universe"].std()
+topMean = groups.get_group(topTiss)["all"].mean()
+topStd = groups.get_group(topTiss)["all"].std()
 
 
-for tissue,group in data.groupby('tissue'):
-    tissMean=group["Universe"].mean()
-    tissStd=group["Universe"].std()
-    for column in columns:
+for tissue,group in groups:
+    tissMean=group["all"].mean()
+    tissStd=group["all"].std()
+    for column in sets +  ["all"]:
         cVal = group[column]
-        pSet=np.sum(group[column])/np.sum(group["Universe"])
+        pSet=np.sum(group[column])/np.sum(group["all"])
+        allTissData.loc[group.index,column]=cVal/(tissStd/topStd)+(pSet*topMean-(cVal.mean()/(tissStd/topStd)))
 
-#         data.loc[group.index,column]=(cVal/(tissStd/topStd)+(pSet*topMean-(cVal.mean()/(tissStd/topStd)).mean()))
-        data.loc[group.index,column]=cVal/(tissStd/topStd)+(pSet*topMean-(cVal.mean()/(tissStd/topStd)))        
 
-# print(data.groupby('tissue').mean()[["all","Universe","Olfactory"]])
-# print(data.groupby('tissue').std()[["all","Universe","Olfactory"]])
-# data.to_csv("/n/groups/price/katie/GenePredAnalysis/Draft1_freeinter/Allgenes_uncorrcoreg/Dataforvis/CoregStd_"+trait+".csv")
-# exit() #WILL WANT TO REMOVE THIS AND TOW OTHER DATS>TOCSV LINES
-data.to_csv(open("/n/groups/price/katie/GenePredAnalysis/Draft1_freeinter/Test_minr2hsqstrat/Data/"+trait+".csv",'w'))
-data["y"]=(data["Z2"]-1)/Ntrait
-if args.tissueFile==None:
-    tissstr=""
-else:
-    tissstr=args.tissueFile.split("/")[-1].replace(".txt","")
-if len(setNames)>0:
-    for setName in setNames:
-        coef = [setName] + covarNames
-        binaryCoef=[i for i in coef if i in binaryNames]
-        contCoef=[i for i in coef if i not in binaryNames]
-        runGCSC(data,binaryCoef,contCoef,setName+tissstr,args.trait,args.freeInter)
-
-else:   
-    binaryCoef=[i for i in covarNames if i in binaryNames]
-    contCoef=[i for i in covarNames if i not in binaryNames]
-    runGCSC(data,binaryCoef,contCoef,"AllCovar"+tissstr,args.trait,args.freeInter)
+allTissData["y"]=(allTissData["Z2"]-1)/args.N
+allTissData["all_annotValue"]=1
+allTissData["genetissCountW"] = 1/allTissData["Gene"].map(allTissData["Gene"].value_counts())
+runGCSC(allTissData,sets,args.N,args.out)
