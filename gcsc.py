@@ -3,6 +3,7 @@ import glob
 import pandas as pd
 import scipy.sparse
 import numpy as np
+import pdb
 import scipy.stats
 import scipy.sparse as sparse
 
@@ -33,15 +34,15 @@ def calcEnrich(coef,setMembership,setName):
             return 1,allH2
         return (setH2/allH2)/(n/M),allH2
     return None,allH2
-
-
-def runGCSC(data,coefs,N,out):
+       
+        
+def runGCSC(data,coefs,N,out,covars):
     
     out=open(args.out+"/GCSCresults.txt",'w')
     out.write("Parameter Value Standard_error P-value\n")
     for coefi in range(len(coefs)):
         coef = coefs[coefi]
-        currCol=["all"]+[coef]
+        currCol=covars+[coef]
         nGenesPerTiss=data.shape[0]/data["tissue"].nunique()
         hgeAll_hat = np.mean(data["Z2"]-1)*nGenesPerTiss/(N*np.mean(data["all_unstd"]))
         
@@ -49,17 +50,18 @@ def runGCSC(data,coefs,N,out):
         totalweights=np.sum(weights)
         sol,XTX,XTy = regress(data[currCol],data["y"],weights)
 
-        modelenriches, h2g = calcEnrich(sol,data[["all_annotValue"]+[coef+"_annotValue" ]],coef)
+        modelenriches, h2g = calcEnrich(sol,data[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue" ]],coef)
         if modelenriches!=None:
-            modeldiffprop = calcDiffProp(sol,data[["all_annotValue"]+[coef+"_annotValue"]],coef)
+            modeldiffprop = calcDiffProp(sol,data[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue"]],coef)
         else:
             modeldiffprop=None
         sd_c = np.std(data[[coef+"_annotValue"]])
-        taustar = (sol[1])*sd_c/(h2g/data.shape[0])
+        taustar = (sol[-2])*sd_c/(h2g/data.shape[0])
         
         #Now, need to jackknife
         nBlocks=data["block"].nunique()
         coef_joint_set = np.zeros(nBlocks,dtype=np.float32)
+        coef_all = np.zeros(nBlocks,dtype=np.float32)
         enriches = np.zeros(nBlocks,dtype=np.float32)
         diffprop = np.zeros(nBlocks,dtype=np.float32)
         inters = np.zeros(nBlocks,dtype=np.float32)
@@ -67,20 +69,20 @@ def runGCSC(data,coefs,N,out):
         ps_enrich = np.zeros(nBlocks,dtype=np.float32)
         ps_diff = np.zeros(nBlocks,dtype=np.float32)
         ps_inters = np.zeros(nBlocks,dtype=np.float32)
-        coef_covar = np.zeros(nBlocks,dtype=np.float32)
+        ps_all = np.zeros(nBlocks,dtype=np.float32)
         mjs = np.zeros((nBlocks),dtype=np.float32)
         hjs = np.zeros((nBlocks),dtype=np.float32)
         for blocki in range(nBlocks):
-            coef_joint_set[blocki],enriches[blocki], diffprop[blocki], ps_joint_set[blocki], ps_enrich[blocki], ps_diff[blocki], inters[blocki], ps_inters[blocki], mjs[blocki], hjs[blocki] = jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCol,modelenriches,modeldiffprop,sol,totalweights)
+            coef_joint_set[blocki], enriches[blocki], diffprop[blocki], ps_joint_set[blocki], ps_enrich[blocki], ps_diff[blocki], inters[blocki], ps_inters[blocki], mjs[blocki], hjs[blocki],coef_all[blocki],ps_all[blocki] = jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCol,modelenriches,modeldiffprop,sol,totalweights,covars)
          
         
         #Write output
-        thetaJ_joint_set= nBlocks*sol[1]-np.sum(((totalweights-mjs)*np.array(coef_joint_set))/totalweights)
+        thetaJ_joint_set= nBlocks*sol[-2]-np.sum(((totalweights-mjs)*np.array(coef_joint_set))/totalweights)
         if modelenriches!=None:
             thetaJ_enrich = nBlocks*modelenriches-np.sum(((totalweights-mjs)*np.array(enriches))/totalweights)
             thetaJ_diff = nBlocks*modeldiffprop-np.sum(((totalweights-mjs)*np.array(diffprop))/totalweights)
         thetaJ_inter = nBlocks*sol[-1]-np.sum(((totalweights-mjs)*np.array(inters))/totalweights)
-
+        thetaJ_all= nBlocks*sol[0]-np.sum(((totalweights-mjs)*np.array(coef_all))/totalweights)
         sd_c = np.std(data[coef+"_annotValue"])
         taustarJ = thetaJ_joint_set*sd_c/(h2g/data.shape[0])
         se_joint_set = np.sqrt(1/nBlocks*np.sum(np.square(ps_joint_set-thetaJ_joint_set)/(hjs-1)))
@@ -89,16 +91,16 @@ def runGCSC(data,coefs,N,out):
             se_enrich = np.sqrt(1/nBlocks*np.sum(np.square(ps_enrich-thetaJ_enrich)/(hjs-1)))
         se_tau_star = se_joint_set*sd_c/(h2g/data.shape[0])
         se_inter = np.sqrt(1/nBlocks*np.sum(np.square(ps_inters-thetaJ_inter)/(hjs-1)))
-        
-        out.write(coef+"_coef: "+'{:0.3e}'.format(thetaJ_joint_set)+" "+'{:0.3e}'.format(se_joint_set)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_joint_set/se_joint_set),nBlocks)*2.)+"\n")
+        se_all = np.sqrt(1/nBlocks*np.sum(np.square(ps_all-thetaJ_all)/(hjs-1)))
+        out.write(coef+"_tauS: "+'{:0.3e}'.format(thetaJ_joint_set)+" "+'{:0.3e}'.format(se_joint_set)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_joint_set/se_joint_set),nBlocks)*2.)+"\n")
         out.write(coef+"_tau*: " + '{:0.3e}'.format(taustarJ) + " " + '{:0.3e}'.format(se_tau_star)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(taustarJ/se_tau_star),nBlocks)*2.) +"\n")
         if modelenriches!=None:
             out.write(coef+"_enrichment: "+str(round(thetaJ_enrich,3))+" "+'{:0.3e}'.format(se_enrich)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_diff/se_diff),nBlocks)*2.)+"\n")
-
+        out.write(coef+"_tauS: "+'{:0.3e}'.format(thetaJ_all)+" "+'{:0.3e}'.format(se_all)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_all/se_all),nBlocks)*2.)+"\n")
         out.write(coef+"_intercept: " + '{:0.3e}'.format(thetaJ_inter)+" "+'{:0.3e}'.format(thetaJ_inter) +"\n")
         
         
-def jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCols,modelenriches,modeldiffprop,sol,totalweights):
+def jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCols,modelenriches,modeldiffprop,sol,totalweights,covars):
     
     currBlock = data.query("block == @blocki")
     currRows = data.query("block != @blocki")
@@ -110,16 +112,17 @@ def jackknife(data,blocki,XTX,XTy,coef,N,hgeAll_hat,nGenesPerTiss,currCols,model
     mj = np.sum(weights_block)
     hj = totalweights / mj
     ps_joint_set = hj*sol[1]-(hj-1)*sol_block[1]
+    ps_all = hj*sol[0]-(hj-1)*sol_block[0]
     
     inters = sol_block[-1]
     ps_inters =  hj*sol[-1]-(hj-1)*sol_block[-1]
     if modelenriches!=None:
-        enrich ,_ = calcEnrich(sol_block,currRows[["all_annotValue"]+[coef+"_annotValue"]],coef)
-        diffprop = calcDiffProp(sol_block,currRows[["all_annotValue"]+[coef+"_annotValue"]],coef)
+        enrich ,_ = calcEnrich(sol_block,currRows[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue"]],coef)
+        diffprop = calcDiffProp(sol_block,currRows[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue"]],coef)
         ps_enrich = hj*modelenriches-(hj-1)*enrich
         ps_diff = hj*modeldiffprop-(hj-1)*diffprop
-        return sol_block[1],enrich, diffprop,ps_joint_set,ps_enrich,ps_diff,inters,ps_inters, mj, hj
-    return sol_block[1], None, None,ps_joint_set,None,None,inters,ps_inters, mj, hj
+        return sol_block[-2],enrich, diffprop,ps_joint_set,ps_enrich,ps_diff,inters,ps_inters, mj, hj,sol_block[-3],ps_all
+    return sol_block[-2], None, None,ps_joint_set,None,None,inters,ps_inters, mj, hj,sol_block[-3],ps_all
 
     
     
@@ -184,6 +187,8 @@ for tissue in sorted(tissues):
 
     if len(sets)>0:
         prepareDataCoexp(data,setMembership,corrscores)
+
+        
     corrscores.setdiag(1, k=0)
     data["All_nocorr"] = corrscores.sum(axis=0).tolist()[0]
     data=data.merge(stats,left_on="Gene",right_on="ENSG")
@@ -210,7 +215,7 @@ topStd = groups.get_group(topTiss)["all"].std()
 for tissue,group in groups:
     tissMean=group["all"].mean()
     tissStd=group["all"].std()
-    for column in sets +  ["all"]:
+    for column in sets + ["all"]:
         cVal = group[column]
         pSet=np.sum(group[column])/np.sum(group["all"])
         allTissData.loc[group.index,column]=cVal/(tissStd/topStd)+(pSet*topMean-(cVal.mean()/(tissStd/topStd)))
@@ -219,4 +224,4 @@ for tissue,group in groups:
 allTissData["y"]=(allTissData["Z2"]-1)/args.N
 allTissData["all_annotValue"]=1
 allTissData["genetissCountW"] = 1/allTissData["Gene"].map(allTissData["Gene"].value_counts())
-runGCSC(allTissData,sets,args.N,args.out)
+runGCSC(allTissData,sets,args.N,args.out,["all"])
