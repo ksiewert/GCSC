@@ -189,7 +189,6 @@ setMembership=pd.read_csv(open(args.geneSets,'r'),header=0,index_col=0)
 sets=setMembership.index.tolist()
 allTissData = pd.DataFrame()
 for tissue in sorted(tissues):
-    print(tissue)
     stats = getTWASStats(args.TWASdir, tissue)
     corrscores = scipy.sparse.load_npz(args.coreg+"/"+tissue+"_coregscores.npz")
     geneNames = np.loadtxt(args.coreg+"/"+tissue+"_geneNames.txt",dtype=str)
