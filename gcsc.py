@@ -96,7 +96,7 @@ def runGCSC(data,coefs,N,out,covars):
         out.write(coef+"_tau*: " + '{:0.3e}'.format(taustarJ) + " " + '{:0.3e}'.format(se_tau_star)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(taustarJ/se_tau_star),nBlocks)*2.) +"\n")
         if modelenriches!=None:
             out.write(coef+"_enrichment: "+str(round(thetaJ_enrich,3))+" "+'{:0.3e}'.format(se_enrich)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_diff/se_diff),nBlocks)*2.)+"\n")
-        out.write(coef+"_tauS: "+'{:0.3e}'.format(thetaJ_all)+" "+'{:0.3e}'.format(se_all)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_all/se_all),nBlocks)*2.)+"\n")
+        out.write(coef+"_tau0: "+'{:0.3e}'.format(thetaJ_all)+" "+'{:0.3e}'.format(se_all)+" "+'{:0.3e}'.format(scipy.stats.t.sf(abs(thetaJ_all/se_all),nBlocks)*2.)+"\n")
         out.write(coef+"_intercept: " + '{:0.3e}'.format(thetaJ_inter)+" "+'{:0.3e}'.format(thetaJ_inter) +"\n")
         
         
