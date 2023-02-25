@@ -125,17 +125,11 @@ def jackknife(data,blocki,XTX,XTy,coefs,N,hgeAll_hat,nGenesPerTiss,currCols,mode
     for coefi in range(len(coefs)):
         ps_joint_set[coefi] = hj*sol[1+coefi]-(hj-1)*sol_block[1+coefi]
         if modelenriches[coefi]!=None:
-            try:
-                enrich[coefi] ,_ = calcEnrich(sol_block,currRows[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue" for coef in coefs]],coefs[coefi])
-            except:
-                pdb.set_trace()
+            enrich[coefi] ,_ = calcEnrich(sol_block,currRows[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue" for coef in coefs]],coefs[coefi])
             diffprop[coefi] = calcDiffProp(sol_block,currRows[[covar+"_annotValue" for covar in covars]+[coef+"_annotValue" for coef in coefs]],coefs[coefi])
             ps_enrich[coefi] = hj*modelenriches[coefi]-(hj-1)*enrich[coefi]
             ps_diff[coefi] = hj*modeldiffprop[coefi]-(hj-1)*diffprop[coefi]
-    return sol_block,enrich, diffprop,ps_joint_set,ps_enrich,ps_diff,ps_inters, mj, hj,ps_all
-    return sol_block, None, None,ps_joint_set,None,None,ps_inters, mj, hj,ps_all
-
-    
+    return sol_block,enrich, diffprop, ps_joint_set, ps_enrich, ps_diff, ps_inters, mj, hj, ps_all
     
     
 def regress(X,y,weights):
